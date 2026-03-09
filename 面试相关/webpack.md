@@ -35,6 +35,18 @@
       - [8、内联chunk](#8内联chunk)
     - [2、总结](#2总结)
   - [七、提高webpack的构建速度](#七提高webpack的构建速度)
+    - [1、优化loader配置](#1优化loader配置)
+    - [2、合理使用 resolve.extensions](#2合理使用-resolveextensions)
+    - [3、优化 resolve.modules](#3优化-resolvemodules)
+    - [4、优化 resolve.alias](#4优化-resolvealias)
+    - [5、使用 DLLPlugin 插件](#5使用-dllplugin-插件)
+      - [1、打包一个 DLL 库](#1打包一个-dll-库)
+      - [2、引入 DLL 库](#2引入-dll-库)
+    - [6、使用 cache-loader](#6使用-cache-loader)
+    - [7、terser 启动多线程](#7terser-启动多线程)
+    - [8、合理使用 sourceMap](#8合理使用-sourcemap)
+  - [八、模式化工具的种类和区别](#八模式化工具的种类和区别)
+    - [1、模式化工具列举](#1模式化工具列举)
 
 <!-- tocstop -->
 
@@ -221,7 +233,6 @@ Loader的执行顺序是从右到左，从下到上的链式调用。在你的�
 1. sass-loader：先将.scss文件编译为CSS
 2. css-loader：处理CSS中的依赖关系（如@import）
 3. MiniCssExtractPlugin.loader：将CSS提取到独立文件
-
 ## 二、Plugin
 **Plugin是一种遵循一定规范的应用程序接口编写出来的计算机应用程序**，只能运行在程序规定的系统下，因为其需要调用原纯净系统提供的函数库或者数据，它和主应用程序互相交互，以提供特定的功能
 
@@ -807,6 +818,7 @@ module.exports = {
 关于webpack对前端性能的优化，可以通过**文件体积大小**入手，其次还可通过**分包**的形式、**减少http请求次数**等方式，实现对前端性能的优化
 ## 七、提高webpack的构建速度
 常见的提升构建速度的手段有如下：
+
 - 优化 loader 配置
 - 合理使用 resolve.extensions
 - 优化 resolve.modules
@@ -816,5 +828,147 @@ module.exports = {
 - terser 启动多线程
 - 合理使用 sourceMap
 
+### 1、优化loader配置
+通过配置**include、exclude、test**属性来匹配文件，接触include、exclude规定哪些匹配应用loader
+ES6 的项目为例，配置 babel-loader时：
+```js
+module.exports = {
+  module: {
+    rules: [
+      {
+        // 如果项目源码中只有 js 文件就不要写成 /\.jsx?$/，提升正则表达式性能
+        test: /\.js$/,
+        // babel-loader 支持缓存转换出的结果，通过 cacheDirectory 选项开启
+        use: ['babel-loader?cacheDirectory'],
+        // 只对项目根目录下的 src 目录中的文件采用 babel-loader
+        include: path.resolve(__dirname, 'src'),
+      },
+    ]
+  },
+};
+```
+### 2、合理使用 resolve.extensions
+`resolve`可以帮助`webpack`从每个 `require/import` 语句中，找到需要引入到合适的模块代码
+通过`resolve.extensions`是解析到文件时自动添加拓展名，默认情况如下：
+```js
+module.exports = {
+  ...
+  extensions:[".warm",".mjs",".js",".json"]
+}
+```
+注意：
+- 当我们引入文件的时候，若没有文件后缀名，则会根据数组内的值依次查找
+- 当我们配置的时候，则不要随便把所有后缀都写在里面，会调用多次文件的查找，减慢打包速度
+### 3、优化 resolve.modules
+`resolve.modules` 用于配置 `webpack` 去哪些目录下寻找第三方模块。默认值为`['node_modules']`，所以默认会从`node_modules`中查找文件 当安装的第三方模块都放在项目根目录下的 `./node_modules`目录下时，所以可以指明存放第三方模块的绝对路径，以减少寻找，配置如下：
+```js
+module.exports = {
+  resolve: {
+    // 使用绝对路径指明第三方模块存放的位置，以减少搜索步骤
+    // 其中 __dirname 表示当前工作目录，也就是项目根目录
+    modules: [path.resolve(__dirname, 'node_modules')]
+  },
+};
+```
+### 4、优化 resolve.alias
+`alias`给一些常用的路径起一个别名，特别当我们的项目目录结构比较深的时候，一个文件的路径可能是`./../../`的形式
 
+通过配置`alias`以减少查找过程
+```js
+module.exports = {
+    ...
+    resolve:{
+        alias:{
+            "@":path.resolve(__dirname,'./src')
+        }
+    }
+}
+```
+### 5、使用 DLLPlugin 插件
+DLL全称是 **动态链接库**，是软件在winodw中实现**共享函数库**的一种实现方式，而Webpack也内置了DLL的功能，为了可以共享，不经常改变的代码，抽成一个共享的库。这个库在之后的编译过程中，会被引入到其他项目的代码中
 
+使用步骤分成两部分：
+- 打包一个 DLL 库
+- 引入 DLL 库
+#### 1、打包一个 DLL 库
+webpack内置了一个DllPlugin可以帮助我们打包一个DLL的库文件
+```js
+module.exports = {
+    ...
+    plugins:[
+        new webpack.DllPlugin({
+            name:'dll_[name]',
+            path:path.resolve(__dirname,"./dll/[name].mainfest.json")
+        })
+    ]
+}
+```
+#### 2、引入 DLL 库
+使用 `webpack` 自带的 `DllReferencePlugin` 插件对 `mainfest.json` 映射文件进行分析，获取要使用的DLL库
+
+然后再通过`AddAssetHtmlPlugin`插件，将我们打包的`DLL`库引入到`Html`模块中
+```js
+module.exports = {
+    ...
+    new webpack.DllReferencePlugin({
+        context:path.resolve(__dirname,"./dll/dll_react.js"),
+        mainfest:path.resolve(__dirname,"./dll/react.mainfest.json")
+    }),
+    new AddAssetHtmlPlugin({
+        outputPath:"./auto",
+        filepath:path.resolve(__dirname,"./dll/dll_react.js")
+    })
+}
+```
+### 6、使用 cache-loader
+在一些性能**开销较大**的`loader`之前添加`cache-loader`，以将**结果缓存到磁盘**里，显著提升二次构建速度
+保存和读取这些缓存文件会有一些**时间开销**，所以请只对性能开销较大的`loader`使用此`loader`
+```js
+module.exports = {
+    module: {
+        rules: [
+            {
+                test: /\.ext$/,
+                use: ['cache-loader', ...loaders],
+                include: path.resolve('src'),
+            },
+        ],
+    },
+};
+```
+### 7、terser 启动多线程
+使用**多进程并行**运行来提高构建速度
+```js
+module.exports = {
+  optimization: {
+    minimizer: [
+      new TerserPlugin({
+        parallel: true,
+      }),
+    ],
+  },
+};
+```
+### 8、合理使用 sourceMap
+打包生成 `sourceMap` 的时候，如果信息越详细，打包速度就会越慢。
+
+sourceMap（源码映射）是一种**将编译、打包或压缩后的代码位置，映射回原始源代码位置**的技术，主要用于调试。
+借助 sourceMap，开发者在浏览器或调试工具中看到的就是“源”文件而不是经过压缩/转译后的代码，大大提升了调试效率。
+sourceMap 文件格式（JSON 大致结构）:
+```json
+{
+  "version": 3, // 映射格式版本
+  "file": "out.js", // 生成后的文件名
+  "sourceRoot": "", // 源文件根路径（可选）
+  "sources": ["a.js"], // 源文件列表
+  "names": ["foo","bar"], // 变量/函数名列表
+  "mappings": "AAAA;AACA;",// 映射信息（经过 Base64 VLQ 编码）
+  "sourcesContent": [ // 可选，源文件完整内容
+    "function foo() { ... }"
+  ]
+}
+```
+## 八、模式化工具的种类和区别
+### 1、模式化工具列举
+模块化是一种处理复杂系统分解为更好的可管理模块的方式
+可以用来分割，组织和打包应用。每个模块完成一个特定的子功能，所有的模块按某种方法组装起来，成为一个整体(bundle)
